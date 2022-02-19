@@ -3,6 +3,7 @@ package socks
 import (
 	"context"
 	"net"
+	//"io"
 )
 
 // Request is a struct to represent a request from SOCKS client.

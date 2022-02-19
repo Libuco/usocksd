@@ -5,21 +5,31 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	//"buf"
+	//"bufio"
+	"strconv"
 
 	"github.com/cybozu-go/log"
 	"github.com/cybozu-go/well"
 )
 
-func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) net.Conn {
+func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte, i int, reader io.Reader) net.Conn {
 	var responseData [8]byte
 	responseData[1] = byte(Status4Rejected)
 	fields := well.FieldsFromContext(ctx)
+
+	//var i interface{} = fields["reader"]
+	//reader := ctx.Value("reader").(io.Reader)
 	fields[log.FnType] = "access"
 	fields[log.FnProtocol] = SOCKS4.String()
-	fields["client_addr"] = conn.RemoteAddr().String()
+	if i==0 {
+		fields["client_addr"] = conn.RemoteAddr().String()
+	}
 
 	errFunc := func(msg string, err error) net.Conn {
-		conn.Write(responseData[:])
+		if i == 0 {
+			conn.Write(responseData[:])
+		}
 		if err != nil {
 			fields[log.FnError] = err.Error()
 		}
@@ -34,7 +44,8 @@ func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) 
 	}
 
 	var payload [6]byte
-	_, err := io.ReadFull(conn, payload[:])
+	//_, err := io.ReadFull(conn, payload[:])
+	_, err := io.ReadFull(reader, payload[:])
 	if err != nil {
 		return errFunc("failed to read port/ip", err)
 	}
@@ -42,7 +53,8 @@ func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) 
 	port := int(binary.BigEndian.Uint16(payload[0:2]))
 	ip := payload[2:6]
 	socks4a := (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] != 0)
-	username, err := readUntilNull(conn)
+	//username, err := readUntilNull(conn)
+	username, err := readUntilNull(reader)
 	if err != nil {
 		return errFunc("failed to read username", err)
 	}
@@ -55,7 +67,8 @@ func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) 
 		ctx:      ctx,
 	}
 	if socks4a {
-		hostname, err := readUntilNull(conn)
+		//hostname, err := readUntilNull(conn)
+		hostname, err := readUntilNull(reader)
 		if err != nil {
 			return errFunc("failed to read hostname", err)
 		}
@@ -66,26 +79,33 @@ func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) 
 		fields["dest_host"] = r.IP.String()
 	}
 
-	if s.Auth != nil && !s.Auth.Authenticate(r) {
+	/*if s.Auth != nil && !s.Auth.Authenticate(r) {
 		return errFunc("authentication failure", nil)
 	}
 
 	if s.Rules != nil && !s.Rules.Match(r) {
 		return errFunc("ruleset mismatch", nil)
-	}
+	}*/
 
 	destConn, err := s.dial(ctx, r, "tcp4")
 	if err != nil {
+		s.Logger.Info("dial to destination failed", fields)
 		return errFunc("dial to destination failed", err)
 	}
 
-	responseData[1] = byte(Status4Granted)
-	copy(responseData[2:8], payload[:])
+	s.Logger.Info("dial successful:" + strconv.Itoa(i) + ":" + r.IP.String(), fields)
 
-	_, err = conn.Write(responseData[:])
-	if err != nil {
-		destConn.Close()
-		return errFunc("failed to write response", err)
+	if i == 0 {
+		responseData[1] = byte(Status4Granted)
+		copy(responseData[2:8], payload[:])
+
+
+		_, err = conn.Write(responseData[:])
+		//s.Logger.Info("WROTETOCLIENT:"+strconv.FormatInt(total,10), fields)
+		if err != nil {
+			destConn.Close()
+			return errFunc("failed to write response", err)
+		}
 	}
 
 	fields["dest_addr"] = destConn.RemoteAddr().String()
@@ -98,7 +118,7 @@ func (s *Server) handleSOCKS4(ctx context.Context, conn net.Conn, cmdByte byte) 
 	return destConn
 }
 
-func readUntilNull(conn net.Conn) (string, error) {
+func readUntilNull(conn io.Reader) (string, error) {
 	var buf []byte
 	var data [1]byte
 
