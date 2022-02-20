@@ -1,0 +1,2 @@
+proxychains4 firefox
+
